@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tetra-sniffer"
+version = "0.1.0"
+description = "TETRA (EN 300 392-2) band scanner and downlink demodulator/decoder for HackRF One"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Przemysław Frasunek" }]
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "scipy>=1.10"]
+keywords = ["tetra", "hackrf", "sdr", "pi/4-dqpsk", "scanner", "gsmtap", "wireshark"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Telecommunications Industry",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Communications :: Ham Radio",
+    "Topic :: Scientific/Engineering",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/venglin/tetra-sniffer"
+Issues = "https://github.com/venglin/tetra-sniffer/issues"
+
+[project.scripts]
+tetrascan = "tetrascan.cli:main"
+
+[tool.setuptools]
+packages = ["tetrascan"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
