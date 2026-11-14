@@ -9,7 +9,7 @@ description = "TETRA (EN 300 392-2) band scanner and downlink demodulator/decode
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "Przemysław Frasunek" }]
+authors = [{ name = "Przemysław Frasunek", email = "przemyslaw@frasunek.com" }]
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.24", "scipy>=1.10"]
 keywords = ["tetra", "hackrf", "sdr", "pi/4-dqpsk", "scanner", "gsmtap", "wireshark"]
