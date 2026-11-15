@@ -121,11 +121,13 @@ def mac_frag(sdu, block_bits: int) -> np.ndarray:
     return np.concatenate([out, np.zeros(block_bits - len(out), np.uint8)])
 
 
-def mac_end(sdu, block_bits: int) -> np.ndarray:
-    total = 13 + len(sdu)
+def mac_end(sdu, block_bits: int, chan_alloc: BitWriter | None = None) -> np.ndarray:
+    ca = chan_alloc.b if chan_alloc else []
+    total = 13 + len(ca) + len(sdu)
     li = -(-total // 8)
     fill = int(total % 8 != 0)
-    w = BitWriter().u(1, 2).u(1, 1).u(fill, 1).u(0, 1).u(li, 6).u(0, 1).u(0, 1).bits(sdu)
+    w = BitWriter().u(1, 2).u(1, 1).u(fill, 1).u(0, 1).u(li, 6).u(0, 1).u(1 if ca else 0, 1)
+    w.bits(ca).bits(sdu)
     if fill:
         w.u(1, 1)
         while len(w) % 8:

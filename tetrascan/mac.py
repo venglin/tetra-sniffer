@@ -277,8 +277,15 @@ def _parse_mac_resource(r: BitReader, start: int, block_end: int) -> dict:
     return d
 
 
-def parse_mac_block(bits, lchan: str) -> list[dict]:
-    """Parse all MAC PDUs in a decoded downlink signalling block (SCH/HD, SCH/F, BNCH, STCH)."""
+def parse_mac_block(bits, lchan: str, frag_enc: bool | None = False) -> list[dict]:
+    """Parse all MAC PDUs in a decoded downlink signalling block (SCH/HD, SCH/F, BNCH, STCH).
+
+    ``frag_enc`` tells whether the fragmented PDU that a MAC-END in this block would
+    complete is encrypted (known from its MAC-RESOURCE); ``None`` means it is unknown.
+    With air interface encryption the channel allocation element of a MAC-END is
+    encrypted together with the TM-SDU (EN 300 392-7), so it is only parsed when the
+    fragment is known to be clear.
+    """
     bits = np.asarray(bits, dtype=np.uint8)
     n = len(bits)
     pos = 0
@@ -310,7 +317,12 @@ def parse_mac_block(bits, lchan: str) -> list[dict]:
                     if r.u(1):
                         d["slot_granting"] = r.u(8)
                     if r.u(1):
-                        d["chan_alloc"] = _parse_chan_alloc(r)
+                        if frag_enc:
+                            d["chan_alloc_encrypted"] = True
+                        elif frag_enc is None:
+                            d["chan_alloc_unknown"] = True  # first fragment not seen
+                        else:
+                            d["chan_alloc"] = _parse_chan_alloc(r)
                     end = min(pos + li * 8, n) if 0 < li <= 0x3A else n
                     sdu = bits[r.pos : end] if r.pos <= end else bits[:0]
                     d["sdu"] = _strip_fill(sdu) if fill else sdu
@@ -594,6 +606,8 @@ def describe(d: dict, cell_band: int | None = None) -> str:
             s += f" encrypted(mode {d['enc']})"
         if "chan_alloc" in d:
             s += " " + _describe_chan_alloc(d["chan_alloc"], cell_band)
+        elif d.get("chan_alloc_encrypted"):
+            s += " chan-alloc(encrypted)"
         if d.get("frag_start"):
             s += " [frag start]"
         return s + _describe_l3(d, cell_band)
@@ -601,6 +615,10 @@ def describe(d: dict, cell_band: int | None = None) -> str:
         s = p
         if "chan_alloc" in d:
             s += " " + _describe_chan_alloc(d["chan_alloc"], cell_band)
+        elif d.get("chan_alloc_encrypted"):
+            s += " chan-alloc(encrypted)"
+        elif d.get("chan_alloc_unknown"):
+            s += " chan-alloc(unknown encryption)"
         return s + _describe_l3(d, cell_band)
     return p or "?"
 

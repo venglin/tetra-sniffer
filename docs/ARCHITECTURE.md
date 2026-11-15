@@ -173,7 +173,10 @@ PDUs per block, length indication, fill-bit removal, Null PDU). MAC-RESOURCE han
   the element itself is encrypted.
 - **TM-SDU.** Passed on to the LLC / MLE parser.
 - **Fragments.** MAC-RESOURCE (length indication 0x3F), MAC-FRAG and MAC-END are
-  reassembled per timeslot.
+  reassembled per timeslot. A MAC-END inherits the encryption mode of the MAC-RESOURCE
+  that started the fragment: its channel allocation element is decoded only when that
+  fragment is clear, is marked encrypted when it is encrypted, and is marked unknown
+  when the first fragment was not received.
 
 Decoded beyond the PDU type:
 

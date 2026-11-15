@@ -174,3 +174,37 @@ def test_end_to_end_new_pdus(method):
     assert {"ACCESS-DEFINE", "D-NWRK-BROADCAST", "D-CONNECT", "D-TX-GRANTED", "D-SETUP"} <= names
     lchans = {b.lchan for _, b, ps in events for p in ps if p["pdu"] == "ACCESS-DEFINE"}
     assert lchans == {"SCH/HD"}  # only SYSINFO is labelled BNCH
+
+
+# ------------------------------------------------------------ MAC-END channel allocation
+def _upper_mac_run(enc, with_head=True):
+    from tetrascan.lower_mac import Block, TdmaTime, UpperMac
+
+    um = UpperMac()
+    sdu = np.random.default_rng(0).integers(0, 2, 300).astype(np.uint8)
+    blocks = []
+    if with_head:
+        blocks.append(sim.mac_resource(1234567, sdu, block_bits=268, enc=enc, frag=True))
+    blocks.append(sim.mac_end(sdu[:40], 268, chan_alloc=sim._chan_alloc(3694, 0b0101)))
+    out = []
+    for fn, bits in enumerate(blocks, 1):
+        out += um.process(Block("SCH/F", True, bits, None, TdmaTime(tn=1, fn=fn, mn=1)))
+    return [d for d in out if d["pdu"] == "MAC-END"][0]
+
+
+def test_mac_end_chan_alloc_clear():
+    d = _upper_mac_run(enc=0)
+    assert d["chan_alloc"]["carrier"] == 3694 and d["chan_alloc"]["timeslots"] == 0b0101
+    assert "encrypted" not in d["tm"]
+
+
+def test_mac_end_chan_alloc_encrypted_fragment():
+    d = _upper_mac_run(enc=3)
+    assert "chan_alloc" not in d and d["chan_alloc_encrypted"]
+    assert d["tm"]["encrypted"]
+    assert "chan-alloc(encrypted)" in mac.describe(d)
+
+
+def test_mac_end_chan_alloc_without_first_fragment():
+    d = _upper_mac_run(enc=0, with_head=False)
+    assert "chan_alloc" not in d and d["chan_alloc_unknown"]

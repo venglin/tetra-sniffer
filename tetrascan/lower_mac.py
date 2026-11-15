@@ -232,8 +232,9 @@ class UpperMac:
     def process(self, blk: Block) -> list[dict]:
         if blk.lchan in ("BSCH", "AACH", "CELL") or blk.bits is None:
             return blk.pdus
-        pdus = parse_mac_block(blk.bits, blk.lchan)
         key = blk.time.tn if blk.time else 0
+        head = self._frag.get(key)
+        pdus = parse_mac_block(blk.bits, blk.lchan, frag_enc=bool(head[0]["enc"]) if head else None)
         for d in pdus:
             p = d["pdu"]
             if p == "MAC-RESOURCE" and not d.get("null"):
