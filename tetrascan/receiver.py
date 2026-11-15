@@ -59,6 +59,7 @@ class ChannelReceiver:
     sysinfo: dict | None = None
 
     def __post_init__(self):
+        self._q_last = (0, 0, 0.0, 0.0, 0, 0)
         self.filt = ChannelFilter(self.fs, self.offset_hz)
         self.demod = Demodulator(method=self.method)
         self.lmac = LowerMac(self.registry, mhz(self.freq_hz))
@@ -79,6 +80,17 @@ class ChannelReceiver:
             self.activity.add(blk, pdus)
             out.append((blk, pdus))
         return out
+
+    def period_quality(self, reset: bool = True) -> dict:
+        """Reception quality since the previous call: bursts, MER, level and CRC success rate."""
+        st, lm = self.stats, self.lmac.stats
+        now = (st.bursts, st.good_bursts, st.mer_sum, st.level_sum, lm["blk_ok"], lm["blk_bad"])
+        b, g, mer, lvl, ok, bad = (x - y for x, y in zip(now, self._q_last))
+        if reset:
+            self._q_last = now
+        return dict(locked=self.locked, bursts=b, mer_db=round(mer / g, 1) if g else None,
+                    level_db=round(lvl / g, 1) if g else None,
+                    crc_pct=round(100 * ok / (ok + bad), 1) if ok + bad else None)
 
     @property
     def locked(self) -> bool:
@@ -121,7 +133,8 @@ class Printer:
                    "bs_service_details")
 
     def __init__(self, verbose: int = 0, as_json: bool = False, t0: float | None = None, stream=None,
-                 sinks: list | None = None):
+                 sinks: list | None = None, quiet: bool = False):
+        self.quiet = quiet
         self.verbose = verbose
         self.as_json = as_json
         self.t0 = t0
@@ -146,6 +159,8 @@ class Printer:
                                        sub_slot=max(0, blk.half - 1))
             for s in self.sinks:
                 s.send(pkt, (self.t0 or 0) + t_rel)
+        if self.quiet:
+            return
         for d in pdus:
             if not self._wanted(ch, blk, d):
                 continue
@@ -207,6 +222,7 @@ class MultiReceiver:
         out = []
         for ch in self.channels:
             rep = ch.activity.report(reset=reset)
+            rep["quality"] = ch.period_quality(reset=reset)
             text = format_report(mhz(ch.freq_hz), rep, ch.lmac.cell, ch.sysinfo["la"] if ch.sysinfo else None)
             out.append((ch, rep, text))
         return out

@@ -23,10 +23,11 @@ sim.py:     synthetic downlink generator used by tests, `selftest` and the examp
 | `mac.py` | MAC / LLC / MLE / MM / CMCE parsers and one-line descriptions |
 | `receiver.py` | per-channel and multi-channel receivers, output filtering |
 | `activity.py` | cell activity statistics (`--report`) |
+| `monitor.py` | activity log (SQLite / CSV, `--log`) and its summaries (`stats`) |
 | `gsmtap.py` | GSMTAP packets, UDP sender, PCAP writer |
 | `scanner.py` | band survey, peak detection, capture planning, verification |
 | `sim.py` | synthetic TETRA main carrier, impairments, cs8 writer |
-| `cli.py` | `scan`, `live`, `record`, `file`, `selftest` |
+| `cli.py` | `scan`, `live`, `record`, `file`, `stats`, `selftest` |
 
 ## Air interface summary
 
@@ -245,6 +246,25 @@ Every `ChannelReceiver` feeds its blocks into an `Activity` object.
 
 Nothing in the report depends on decryption: the AACH and the MAC header fields are never
 encrypted.
+
+### Activity log (`monitor.py`)
+
+- **Rows.** `report_row` flattens a report into one row per carrier and period: Unix
+  start / end time, cell identity, reception quality of the period
+  (`ChannelReceiver.period_quality`), per-timeslot usage shares, session statistics and
+  signalling counts. Clear L3 PDU counts are stored as a JSON string.
+- **Storage.** `ReportLog` writes SQLite (tables `reports` and `sessions`) for `.db` /
+  `.sqlite` / `.sqlite3`, and CSV otherwise (sessions go to `<name>.sessions.csv`). Both
+  are append-only, so a monitoring run can be stopped and restarted on the same file.
+  Times come from the capture start (`live`: start of streaming; `file`: the sidecar's
+  `start_time`) plus the sample position. A period without any bursts gets the wall-clock
+  time of the report.
+- **Summaries.** `summarise` groups rows by carrier and local hour or day. It weights
+  per-period percentages by period length. It computes the traffic intensity as the sum
+  over timeslots of the traffic share (Erlang), and normalises session and PDU counts by
+  the monitored time.
+- **Robustness.** When the HackRF stops streaming, `live` still writes its final report
+  before exiting with status 1.
 
 ## Scanner (`scanner.py`)
 

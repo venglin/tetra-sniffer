@@ -1,4 +1,4 @@
-"""Command line interface: scan, live, record, file, selftest."""
+"""Command line interface: scan, live, record, file, stats, selftest."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import __version__, gsmtap, scanner, sim
+from . import __version__, gsmtap, monitor, scanner, sim
 from .dsp import iq_from_cs8, psd
 from .mac import mhz
 from .receiver import MultiReceiver, Printer
@@ -127,8 +127,10 @@ def cmd_live(args) -> int:
     sinks = _sinks(args)
     dev = _open_hackrf(args, lo, LIVE_RATE)
     _log(f"tuned to {mhz(lo)} MHz at {LIVE_RATE / 1e6:.3f} Msps, channels: {', '.join(mhz(f) for f in freqs)}")
-    printer = Printer(verbose=args.verbose, as_json=args.json, t0=time.time(), sinks=sinks)
+    printer = Printer(verbose=args.verbose, as_json=args.json, t0=time.time(), sinks=sinks, quiet=args.quiet)
     rx = MultiReceiver(LIVE_RATE, lo, freqs, printer, method=args.demod, known_cells=_cells(args))
+    log = _open_log(args)
+    rc = 0
     t_status = time.monotonic() + args.status if args.status else None
     t_end = time.monotonic() + args.duration if args.duration else None
     t_report = time.monotonic() + (args.report or 0)
@@ -142,7 +144,8 @@ def cmd_live(args) -> int:
             except queue.Empty:
                 if not dev.is_streaming():
                     _log("HackRF stopped streaming")
-                    return 1
+                    rc = 1
+                    break
                 continue
             raw_i8 = np.frombuffer(raw, np.int8)
             clipped += int(np.count_nonzero((raw_i8 == 127) | (raw_i8 <= -127)))
@@ -156,7 +159,7 @@ def cmd_live(args) -> int:
                 clipped = total = 0
             if args.report and now >= t_report:
                 t_report = now + args.report
-                _report(rx, args, printer, reset=True)
+                _report(rx, args, printer, log, time.time(), reset=True)
             if t_end and now >= t_end:
                 break
     except KeyboardInterrupt:
@@ -166,8 +169,10 @@ def cmd_live(args) -> int:
         for s in sinks:
             s.close()
     _log(f"[final] {rx.status_line()}")
-    _report(rx, args, printer)
-    return 0
+    _report(rx, args, printer, log, time.time())
+    if log:
+        log.close()
+    return rc
 
 
 # ---------------------------------------------------------------- record
@@ -235,8 +240,10 @@ def cmd_file(args) -> int:
             raise SystemExit("no TETRA-like carriers found; pass channels with -f")
         _log(f"auto-detected channels: {', '.join(mhz(f) for f in freqs)}")
     sinks = _sinks(args)
-    printer = Printer(verbose=args.verbose, as_json=args.json, t0=meta.get("start_time"), sinks=sinks)
+    printer = Printer(verbose=args.verbose, as_json=args.json, t0=meta.get("start_time"), sinks=sinks,
+                      quiet=args.quiet)
     rx = MultiReceiver(rate, center, freqs, printer, method=args.demod, known_cells=_cells(args))
+    log = _open_log(args)
     chunk = 1 << 18
     pos = 0
     t_report = args.report or 0
@@ -249,13 +256,30 @@ def cmd_file(args) -> int:
         pos += len(x)
         if args.report and pos / rate >= t_report:
             t_report += args.report
-            _report(rx, args, printer, reset=True)
+            _report(rx, args, printer, log, (printer.t0 or 0) + pos / rate, reset=True)
     for s in sinks:
         s.close()
     dt = time.monotonic() - t
     _log(f"[final] {pos / rate:.1f} s of IQ in {dt:.1f} s ({pos / rate / max(dt, 1e-9):.1f}x real time) | "
          f"{rx.status_line()}")
-    _report(rx, args, printer)
+    _report(rx, args, printer, log, (printer.t0 or 0) + pos / rate)
+    if log:
+        log.close()
+    return 0
+
+
+# ----------------------------------------------------------------- stats
+def cmd_stats(args) -> int:
+    rows = monitor.read_reports(args.path)
+    if not rows:
+        _log("no reports in the log")
+        return 1
+    summary = monitor.summarise(rows, args.by)
+    if args.json:
+        for s in summary:
+            print(json.dumps(s))
+    else:
+        print(monitor.format_summary(summary, args.by))
     return 0
 
 
@@ -312,15 +336,34 @@ def _add_demod(p: argparse.ArgumentParser, cell: bool = True) -> None:
                             "(secondary carriers) be decoded. Repeatable.")
 
 
-def _report(rx: MultiReceiver, args, printer: Printer, reset: bool = False) -> None:
-    """Print the activity report (text on stderr, plus one JSON line per channel with --json)."""
+def _open_log(args) -> monitor.ReportLog | None:
+    if not args.log:
+        return None
+    if args.report is None:
+        args.report = 300.0  # default reporting period when logging
+    _log(f"logging activity reports every {args.report:.0f} s to {args.log}")
+    return monitor.ReportLog(args.log)
+
+
+def _report(rx: MultiReceiver, args, printer: Printer, log: monitor.ReportLog | None, t_wall: float,
+            reset: bool = False) -> None:
+    """Print the activity report (text on stderr, one JSON line per channel with --json) and
+    append it to the --log file."""
     if args.report is None:
         return
+    rows, sessions = [], []
+    t0 = printer.t0 or 0.0
     for ch, rep, text in rx.reports(reset=reset):
         _log(text)
         if args.json:
-            print(json.dumps(dict(t=round(time.time(), 3), freq=ch.freq_hz, report=rep)), file=printer.stream,
+            print(json.dumps(dict(t=round(t_wall, 3), freq=ch.freq_hz, report=rep)), file=printer.stream,
                   flush=True)
+        if log:
+            rows.append(monitor.report_row(rep, ch.freq_hz, t0, t_wall, ch.lmac.cell,
+                                           ch.sysinfo["la"] if ch.sysinfo else None))
+            sessions += monitor.session_rows(rep, ch.freq_hz, t0)
+    if log:
+        log.write(rows, sessions)
 
 
 def _add_output(p: argparse.ArgumentParser) -> None:
@@ -328,6 +371,10 @@ def _add_output(p: argparse.ArgumentParser) -> None:
     g.add_argument("--report", nargs="?", type=float, const=0.0, metavar="S",
                    help="print a cell activity report (slot occupancy, calls, signalling load) at the end, "
                         "and every S seconds if S is given")
+    g.add_argument("--log", metavar="FILE",
+                   help="append activity reports to FILE: SQLite for .db/.sqlite, CSV otherwise "
+                        "(implies --report 300 unless --report is given); see 'tetrascan stats'")
+    g.add_argument("-q", "--quiet", action="store_true", help="do not print decoded PDUs")
     g.add_argument("-v", "--verbose", action="count", default=0,
                    help="-v: also broadcast and null PDUs, -vv: also AACH")
     g.add_argument("--json", action="store_true", help="print one JSON object per PDU")
@@ -383,6 +430,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output(p)
     _add_demod(p)
     p.set_defaults(func=cmd_file)
+
+    p = sub.add_parser("stats", help="summarise an activity log written with --log, per hour or day")
+    p.add_argument("path", help="log file (.db / .sqlite or .csv)")
+    p.add_argument("--by", choices=["hour", "day"], default="hour", help="aggregation period (default hour)")
+    p.add_argument("--json", action="store_true", help="print one JSON object per row")
+    p.set_defaults(func=cmd_stats)
 
     p = sub.add_parser("selftest", help="synthetic benchmark: decoded blocks vs Es/N0")
     p.add_argument("--snr", type=float, nargs="+", default=[4, 6, 8, 10, 12, 15, 20, 30])

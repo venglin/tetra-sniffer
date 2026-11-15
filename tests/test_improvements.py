@@ -276,3 +276,46 @@ def test_activity_sessions():
     assert rep["slots"][3]["sessions"] == 2 and "unallocated" in rep["slots"][3]["dl"]
     rep = act.report()
     assert rep["sessions"]["count"] == 0 and rep["sessions"]["ongoing"] == 1  # the open call carries over
+
+
+# ------------------------------------------------------------ monitoring log
+@pytest.mark.parametrize("suffix", [".db", ".csv"])
+def test_report_log_and_stats(tmp_path, suffix):
+    from tetrascan import monitor
+
+    fs = 576e3
+    x = sim.wideband([(50e3, sim.CellConfig(), 0.0)], fs, 3.0, snr_db=15, seed=8)
+    rx, _ = _run(x, fs, [50e3])
+    path = tmp_path / ("log" + suffix)
+    log = monitor.ReportLog(str(path))
+    t0 = 1_800_000_000.0  # a fixed Unix time
+    (ch, rep, _), = rx.reports(reset=True)
+    rep["session_list"] = [dict(tn=2, um=12, start=1.0, duration_s=3.5)]
+    row = monitor.report_row(rep, ch.freq_hz, t0, t0 + 3, ch.lmac.cell, 1001)
+    log.write([row], monitor.session_rows(rep, ch.freq_hz, t0))
+    log.write([dict(row, t_start=row["t_start"] + 3, t_end=row["t_end"] + 3)], [])
+    log.close()
+    rows = monitor.read_reports(str(path))
+    assert len(rows) == 2 and rows[0]["cc"] == sim.CellConfig().cc and rows[0]["tn2_traffic"] == 100.0
+    assert rows[0]["crc_pct"] == 100.0 and rows[0]["pdus"] > 30
+    (s,) = monitor.summarise(rows, "hour")
+    assert s["traffic_erlang"] == 1.0 and s["max_addresses"] == 3 and s["crc_pct"] == 100.0
+    if suffix == ".csv":
+        assert (tmp_path / "log.sessions.csv").read_text().splitlines()[1].endswith(",2,12,3.5")
+    else:
+        import sqlite3
+        assert sqlite3.connect(path).execute("SELECT tn, usage_marker, duration_s FROM sessions").fetchall() \
+            == [(2, 12, 3.5)]
+
+
+def test_cli_file_log_quiet(tmp_path, capsys):
+    from pathlib import Path
+    from tetrascan import cli
+
+    log = tmp_path / "act.db"
+    ex = Path(__file__).parent.parent / "examples" / "synthetic.cs8"
+    assert cli.main(["file", str(ex), "-q", "--report", "1", "--log", str(log)]) == 0
+    assert capsys.readouterr().out == ""  # -q: no PDUs on stdout
+    assert cli.main(["stats", str(log)]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("hour") and len(out) == 3  # header + two carriers

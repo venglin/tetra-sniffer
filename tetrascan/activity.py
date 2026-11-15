@@ -147,6 +147,10 @@ class Activity:
                    chan_allocs=m["chan_alloc_clear"] + m["chan_alloc_encrypted"],
                    chan_allocs_encrypted=m["chan_alloc_encrypted"])
         out = dict(period_s=round(period, 1), slots=slots, sessions=sess, signalling=sig, clear_l3=dict(self.l3))
+        out["t_start"] = round(self.t_first, 3) if self.t_first is not None else None
+        out["t_end"] = round(self.t_last + SLOT_S, 3) if self.t_last is not None else None
+        out["session_list"] = [dict(tn=s.tn, um=s.um, start=round(s.start, 3), duration_s=round(s.duration, 2))
+                               for s in self.sessions]
         if reset:
             self.reset()
         return out

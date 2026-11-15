@@ -96,6 +96,11 @@ tetrascan live -f 391.4125 --ppm 13 --cell 901:9999:4
 # cell activity report (slot occupancy, traffic sessions, signalling load) every 10 minutes
 tetrascan live -f 391.2125 --ppm 13 --report 600
 
+# long-term monitoring: reports every 5 minutes into SQLite, then hourly / daily summaries
+tetrascan live -f 391.2125 -f 391.4125 --ppm 13 -q --status 0 --log activity.db
+tetrascan stats activity.db
+tetrascan stats activity.db --by day
+
 # ...and watch it in Wireshark (filter: gsmtap)
 tetrascan live -f 391.2125 --gsmtap
 tetrascan live -f 391.2125 --pcap cell.pcap
@@ -153,6 +158,8 @@ show `cell main carrier …` belong to the cell on that frequency.
 | `--gsmtap [HOST:PORT]` | send decoded blocks to Wireshark over UDP (default 127.0.0.1:4729) |
 | `--pcap FILE` | write decoded blocks as GSMTAP into a PCAP file |
 | `--report [N]` | (`live`, `file`) cell activity report at the end, and every N s if given (see below) |
+| `--log FILE` | (`live`, `file`) append the activity reports to SQLite (`.db`, `.sqlite`) or CSV (any other name); implies `--report 300` |
+| `-q` | (`live`, `file`) do not print decoded PDUs (GSMTAP, reports and the log still work) |
 | `--status N` | (`live`) status line every N s: lock, MER, level, carrier offset, CRC rate, clipping, USB drops |
 
 `scan` also has `--start` / `--stop` (MHz), `--threshold` (dB), `--dwell` (s per verify
@@ -194,6 +201,37 @@ reported, never addresses or contents. An illustrative example with fictitious v
 
 With `--report N` each report covers the N seconds since the previous one, which suits
 long-term monitoring. With `--json` every report is also printed as one JSON line.
+
+### Long-term monitoring
+
+`--log FILE` appends every report to a file, one row per carrier and period, with the
+reception quality of that period (bursts, MER, level, CRC rate). Finished traffic
+sessions go into a second table (`sessions`), or into `FILE.sessions.csv` for CSV logs,
+with their start time, timeslot, usage marker and duration. As in the report, only
+counts and durations are stored.
+
+`tetrascan stats FILE [--by hour|day]` summarises a log. An illustrative example with
+fictitious values:
+
+```
+hour              freq MHz  CC  cover   Erl  busy%  sess/h  avg s  PDU/min  addr  enc%  RA/min   MER  CRC%
+2026-11-15 16:00  391.2125   4  60.0m  0.00    0.0     0.0      -      0.0     0     -     0.0  16.2   100
+2026-11-15 16:00  391.4125   7  60.0m  0.67   44.0   775.4    3.1   1026.9    22   100    13.8   6.7   100
+```
+
+| column | meaning |
+|---|---|
+| `cover` | minutes of the hour (or day) that were monitored |
+| `Erl` | traffic intensity: mean number of downlink timeslots carrying traffic |
+| `busy%` | traffic share of the busiest timeslot |
+| `sess/h`, `avg s` | traffic sessions per hour and their mean duration |
+| `PDU/min`, `addr` | signalling PDUs per minute; most distinct addresses seen in one period |
+| `enc%` | share of signalling PDUs that are encrypted |
+| `RA/min` | random-access acknowledgements per minute |
+| `MER`, `CRC%` | reception quality |
+
+The SQLite file can also be queried directly, for example
+`SELECT strftime('%H', t_start, 'unixepoch', 'localtime') AS h, count(*) FROM sessions GROUP BY h`.
 
 ## Performance
 
