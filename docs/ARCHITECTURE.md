@@ -118,6 +118,18 @@ It is batched over all bursts of an input chunk (about 1.4 ms per burst). On the
 symbol level its BER is roughly 2 dB better than differential detection, and the
 `selftest` table in the README shows a similar gain for decoded blocks.
 
+**Headroom.** Measured on random bursts with a slow phase drift, the detector's BER is
+within about 0.2 dB of the same BCJR given the true carrier phase, for 5–8 dB Es/N0.
+Window lengths of 33 and 65 symbols perform the same; 17 and 129 are slightly worse.
+Two refinements were tried and dropped, because neither gained more than a few hundredths
+of a dB:
+
+- **Training sequences as pilots.** The known bits (q, n/p, y and the frequency
+  correction field) were used as hard constraints in the BCJR. Because the data are
+  differentially encoded, a known dibit only helps its immediate neighbours.
+- **Decision-directed phase.** The carrier phase was re-estimated from the BCJR state
+  posteriors and the BCJR run again.
+
 ## Lower MAC (`lower_mac.LowerMac`, `coding.py`)
 
 Coding chain, per logical channel:
@@ -256,8 +268,12 @@ encrypted.
 
 ## Known limitations and ideas
 
-- **Better phase tracking.** Using the known training sequences (q, n/p, y) as pilots, or
-  iterating with the decoder, could gain more at very low SNR.
+- **BSCH acquisition at very low SNR.** Below about 6 dB Es/N0 the receiver locks and
+  classifies bursts correctly, but a cell that sends a synchronisation burst only once per
+  multiframe (frame 18) may take many seconds to deliver one BSCH that passes its CRC.
+  Soft-combining several BSCHs is possible, because the code is linear and only the TDMA
+  time changes between them, but it needs a search over the 4320 slot positions. Cells
+  that fill idle slots with synchronisation bursts (common in practice) are not affected.
 - **Colour code from a lone weak carrier.** A carrier on its own still needs either one
   good BSCH or `--cell`. Its colour code could be searched (MCC/MNC from a neighbour list,
   64 colour codes) with the CRC as the test.
