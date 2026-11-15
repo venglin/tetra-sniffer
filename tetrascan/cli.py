@@ -131,6 +131,7 @@ def cmd_live(args) -> int:
     rx = MultiReceiver(LIVE_RATE, lo, freqs, printer, method=args.demod, known_cells=_cells(args))
     t_status = time.monotonic() + args.status if args.status else None
     t_end = time.monotonic() + args.duration if args.duration else None
+    t_report = time.monotonic() + (args.report or 0)
     clipped = total = 0
     try:
         dev.start()
@@ -153,6 +154,9 @@ def cmd_live(args) -> int:
                 _log(f"[status] {rx.status_line()} | clip {100 * clipped / max(total, 1):.3f} % | "
                      f"usb drop {dev.dropped_bytes // 2} smp, backlog {dev.queue.qsize()}")
                 clipped = total = 0
+            if args.report and now >= t_report:
+                t_report = now + args.report
+                _report(rx, args, printer, reset=True)
             if t_end and now >= t_end:
                 break
     except KeyboardInterrupt:
@@ -162,6 +166,7 @@ def cmd_live(args) -> int:
         for s in sinks:
             s.close()
     _log(f"[final] {rx.status_line()}")
+    _report(rx, args, printer)
     return 0
 
 
@@ -234,6 +239,7 @@ def cmd_file(args) -> int:
     rx = MultiReceiver(rate, center, freqs, printer, method=args.demod, known_cells=_cells(args))
     chunk = 1 << 18
     pos = 0
+    t_report = args.report or 0
     t = time.monotonic()
     while True:
         x = _read_iq(args.path, fmt, pos, chunk)
@@ -241,11 +247,15 @@ def cmd_file(args) -> int:
             break
         rx.feed(x)
         pos += len(x)
+        if args.report and pos / rate >= t_report:
+            t_report += args.report
+            _report(rx, args, printer, reset=True)
     for s in sinks:
         s.close()
     dt = time.monotonic() - t
     _log(f"[final] {pos / rate:.1f} s of IQ in {dt:.1f} s ({pos / rate / max(dt, 1e-9):.1f}x real time) | "
          f"{rx.status_line()}")
+    _report(rx, args, printer)
     return 0
 
 
@@ -302,8 +312,22 @@ def _add_demod(p: argparse.ArgumentParser, cell: bool = True) -> None:
                             "(secondary carriers) be decoded. Repeatable.")
 
 
+def _report(rx: MultiReceiver, args, printer: Printer, reset: bool = False) -> None:
+    """Print the activity report (text on stderr, plus one JSON line per channel with --json)."""
+    if args.report is None:
+        return
+    for ch, rep, text in rx.reports(reset=reset):
+        _log(text)
+        if args.json:
+            print(json.dumps(dict(t=round(time.time(), 3), freq=ch.freq_hz, report=rep)), file=printer.stream,
+                  flush=True)
+
+
 def _add_output(p: argparse.ArgumentParser) -> None:
     g = p.add_argument_group("output")
+    g.add_argument("--report", nargs="?", type=float, const=0.0, metavar="S",
+                   help="print a cell activity report (slot occupancy, calls, signalling load) at the end, "
+                        "and every S seconds if S is given")
     g.add_argument("-v", "--verbose", action="count", default=0,
                    help="-v: also broadcast and null PDUs, -vv: also AACH")
     g.add_argument("--json", action="store_true", help="print one JSON object per PDU")

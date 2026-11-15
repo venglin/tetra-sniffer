@@ -6,6 +6,7 @@ HackRF (cs8 IQ) ──► ChannelFilter ──► Demodulator ──► LowerMac
  or a file          shift + resample    π/4-DQPSK      coding.py     mac.py        + gsmtap.py
                     to 144 kHz          → soft bursts  → blocks      → PDUs
 
+activity.py: AACH + MAC headers → slot occupancy, traffic sessions, signalling load
 scanner.py: survey (PSD) → candidates → verify (MultiReceiver per window)
 sim.py:     synthetic downlink generator used by tests, `selftest` and the example
 ```
@@ -21,6 +22,7 @@ sim.py:     synthetic downlink generator used by tests, `selftest` and the examp
 | `lower_mac.py` | burst → logical channels, cell state / TDMA time, shared colour codes, fragment reassembly |
 | `mac.py` | MAC / LLC / MLE / MM / CMCE parsers and one-line descriptions |
 | `receiver.py` | per-channel and multi-channel receivers, output filtering |
+| `activity.py` | cell activity statistics (`--report`) |
 | `gsmtap.py` | GSMTAP packets, UDP sender, PCAP writer |
 | `scanner.py` | band survey, peak detection, capture planning, verification |
 | `sim.py` | synthetic TETRA main carrier, impairments, cs8 writer |
@@ -176,7 +178,8 @@ PDUs per block, length indication, fill-bit removal, Null PDU). MAC-RESOURCE han
   reassembled per timeslot. A MAC-END inherits the encryption mode of the MAC-RESOURCE
   that started the fragment: its channel allocation element is decoded only when that
   fragment is clear, is marked encrypted when it is encrypted, and is marked unknown
-  when the first fragment was not received.
+  when the first fragment was not received. PDUs that follow a MAC-END in the same block
+  are parsed as well.
 
 Decoded beyond the PDU type:
 
@@ -210,6 +213,26 @@ A PCAP written with `--pcap` was dissected by Wireshark's TETRA dissector:
 - **SCH/HD.** Wireshark's GSMTAP handler maps sub-type SCH/HD to nothing and drops those
   blocks. Signalling in half slots (SCH/HD, and BNCH other than SYSINFO) therefore shows
   only in tetrascan's own output.
+
+## Activity report (`activity.py`)
+
+Every `ChannelReceiver` feeds its blocks into an `Activity` object.
+
+- **Slot occupancy.** For each AACH, outside frame 18, the downlink usage of the slot
+  (unallocated, assigned control, common control or traffic) and the uplink usage (header
+  3: traffic or unallocated, otherwise control) are counted per timeslot. The share of
+  synchronisation bursts per slot is counted as well.
+- **Traffic sessions.** A session opens when a slot shows a traffic usage marker, and is
+  extended while the same marker keeps appearing with gaps of at most 3 s. It ends when
+  the slot shows something else, the marker changes, or the gap is longer. Frame 18
+  neither extends nor ends a session. A session still open at the end of a reporting
+  period is reported as ongoing and carried over to the next period.
+- **Signalling load.** Counts of null and non-null MAC-RESOURCE PDUs, encrypted vs clear,
+  distinct addresses (only their number is reported), fragments, random-access
+  acknowledgements, channel allocations, and the types of clear layer-3 PDUs.
+
+Nothing in the report depends on decryption: the AACH and the MAC header fields are never
+encrypted.
 
 ## Scanner (`scanner.py`)
 

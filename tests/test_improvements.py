@@ -208,3 +208,71 @@ def test_mac_end_chan_alloc_encrypted_fragment():
 def test_mac_end_chan_alloc_without_first_fragment():
     d = _upper_mac_run(enc=0, with_head=False)
     assert "chan_alloc" not in d and d["chan_alloc_unknown"]
+
+
+def test_pdus_after_mac_end_are_parsed():
+    from tetrascan.lower_mac import Block, TdmaTime, UpperMac
+
+    um = UpperMac()
+    sdu = np.random.default_rng(1).integers(0, 2, 300).astype(np.uint8)
+    first = sim.mac_resource(1234567, sdu, block_bits=268, frag=True)
+    end = sim.mac_end(sdu[:40], 268)
+    li = int("".join(map(str, end[5:11])), 2)
+    status = sim.llc(sim.cmce_d_status(7654321, 0x8001))
+    second = np.concatenate([end[: li * 8], sim.mac_resource(7654321, status, block_bits=268 - li * 8)])
+    out = []
+    for fn, bits in enumerate([first, second], 1):
+        out += um.process(Block("SCH/F", True, bits, None, TdmaTime(tn=1, fn=fn, mn=1)))
+    names = [d["pdu"] for d in out]
+    assert names == ["MAC-RESOURCE", "MAC-END", "MAC-RESOURCE"]
+    assert out[1]["reassembled_from"] == 1234567
+    assert out[2]["ssi"] == 7654321 and out[2]["tm"]["l3"] == "D-STATUS"
+
+
+# ------------------------------------------------------------ activity report
+def test_activity_report_end_to_end():
+    fs = 576e3
+    x = sim.wideband([(50e3, sim.CellConfig(), 0.0)], fs, 3.0, snr_db=15, seed=8)
+    rx, _ = _run(x, fs, [50e3])
+    (ch, rep, text), = rx.reports()
+    assert rep["slots"][2]["dl"] == {"traffic": 100.0} and rep["slots"][2]["ul"] == {"traffic": 100.0}
+    assert rep["slots"][1]["dl"] == {"common control": 100.0}
+    assert rep["sessions"]["ongoing"] == 1 and rep["sessions"]["usage_markers"] == 1
+    sig = rep["signalling"]
+    assert sig["pdus"] > 30 and sig["addresses"] == 3 and 0 < sig["encrypted"] < sig["pdus"]
+    assert {"D-SETUP", "D-STATUS"} <= set(rep["clear_l3"])
+    assert "TN2  DL traffic 100%" in text
+    assert "1234567" not in text  # counts only, no addresses
+
+
+def test_activity_sessions():
+    from types import SimpleNamespace
+    from tetrascan import burst as B
+    from tetrascan.activity import Activity
+    from tetrascan.dsp import CHANNEL_RATE
+    from tetrascan.lower_mac import Block, TdmaTime
+
+    act = Activity(gap_s=3.0)
+    t0 = TdmaTime(1, 1, 1)
+
+    def feed(t_s, um, n_frames):
+        for k in range(n_frames):
+            slots = 4 * (int(t_s / (255 / 18000)) // 4 + k) + 2  # always TN3
+            t = t0.advance(slots)
+            burst = SimpleNamespace(start=slots * 255 * 8 + 0.0, kind=B.NDB_FULL)
+            traffic = um > 3
+            a = dict(pdu="ACCESS-ASSIGN", hdr=3 if traffic else 1, field1=um, field2=um if traffic else 0,
+                     traffic=traffic and t.fn != 18, dl_usage=2 if t.fn == 18 else um)
+            act.add(Block("AACH", True, None, burst, t), [a])
+
+    assert 255 * 8 / CHANNEL_RATE == pytest.approx(255 / 18000)
+    feed(0.0, 10, 36)    # ~2 s call on UM 10 (frame 18 inside does not split it)
+    feed(2.1, 0, 5)      # unallocated
+    feed(2.5, 11, 18)    # ~1 s on UM 11
+    feed(8.0, 11, 18)    # same UM after a 4.5 s gap: a new call
+    rep = act.report(reset=True)
+    assert rep["sessions"]["count"] == 2 and rep["sessions"]["ongoing"] == 1 and rep["sessions"]["usage_markers"] == 2
+    assert rep["sessions"]["max_s"] == pytest.approx(2.04, abs=0.1)
+    assert rep["slots"][3]["sessions"] == 2 and "unallocated" in rep["slots"][3]["dl"]
+    rep = act.report()
+    assert rep["sessions"]["count"] == 0 and rep["sessions"]["ongoing"] == 1  # the open call carries over

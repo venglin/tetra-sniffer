@@ -326,6 +326,11 @@ def parse_mac_block(bits, lchan: str, frag_enc: bool | None = False) -> list[dic
                     end = min(pos + li * 8, n) if 0 < li <= 0x3A else n
                     sdu = bits[r.pos : end] if r.pos <= end else bits[:0]
                     d["sdu"] = _strip_fill(sdu) if fill else sdu
+                    out.append(d)
+                    if r.pos <= end < n:  # more PDUs may follow the last fragment
+                        pos = end
+                        continue
+                    break
                 out.append(d)
                 break
             if t == 2:

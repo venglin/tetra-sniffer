@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import gsmtap
+from .activity import Activity, format_report
 from .demod import Demodulator
 from .dsp import CHANNEL_RATE, ChannelFilter
 from .lower_mac import Block, CellRegistry, LowerMac, UpperMac
@@ -53,6 +54,7 @@ class ChannelReceiver:
     lmac: LowerMac = field(init=False)
     umac: UpperMac = field(init=False)
     stats: ChannelStats = field(default_factory=ChannelStats)
+    activity: Activity = field(default_factory=Activity)
     sync: dict | None = None
     sysinfo: dict | None = None
 
@@ -74,6 +76,7 @@ class ChannelReceiver:
                     self.sync = d
                 elif d.get("pdu") == "SYSINFO":
                     self.sysinfo = d
+            self.activity.add(blk, pdus)
             out.append((blk, pdus))
         return out
 
@@ -198,6 +201,15 @@ class MultiReceiver:
         if self.printer:
             for _, _, ch, blk, pdus in sorted(events, key=lambda e: (e[0], e[1])):
                 self.printer.emit(ch, blk, pdus)
+
+    def reports(self, reset: bool = False) -> list[tuple[ChannelReceiver, dict, str]]:
+        """Activity report of every channel: (channel, report dict, formatted text)."""
+        out = []
+        for ch in self.channels:
+            rep = ch.activity.report(reset=reset)
+            text = format_report(mhz(ch.freq_hz), rep, ch.lmac.cell, ch.sysinfo["la"] if ch.sysinfo else None)
+            out.append((ch, rep, text))
+        return out
 
     def status_line(self) -> str:
         parts = []

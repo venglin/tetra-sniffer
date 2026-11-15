@@ -93,6 +93,9 @@ tetrascan live -f 391.2125 -f 391.0125 --ppm 13
 # a secondary carrier on its own: give the cell's colour code (as printed by scan)
 tetrascan live -f 391.4125 --ppm 13 --cell 901:9999:4
 
+# cell activity report (slot occupancy, traffic sessions, signalling load) every 10 minutes
+tetrascan live -f 391.2125 --ppm 13 --report 600
+
 # ...and watch it in Wireshark (filter: gsmtap)
 tetrascan live -f 391.2125 --gsmtap
 tetrascan live -f 391.2125 --pcap cell.pcap
@@ -149,6 +152,7 @@ show `cell main carrier …` belong to the cell on that frequency.
 | `--json` | one JSON object per PDU (for scripting) |
 | `--gsmtap [HOST:PORT]` | send decoded blocks to Wireshark over UDP (default 127.0.0.1:4729) |
 | `--pcap FILE` | write decoded blocks as GSMTAP into a PCAP file |
+| `--report [N]` | (`live`, `file`) cell activity report at the end, and every N s if given (see below) |
 | `--status N` | (`live`) status line every N s: lock, MER, level, carrier offset, CRC rate, clipping, USB drops |
 
 `scan` also has `--start` / `--stop` (MHz), `--threshold` (dB), `--dwell` (s per verify
@@ -157,6 +161,39 @@ window), `--all` (verify every carrier, not only the TETRA-like ones) and `--no-
 By default `live` and `file` print each cell's identity and SYSINFO once (and again if
 they change), then every dedicated signalling PDU. Idle cells are therefore quiet. Use
 `-v` to see everything.
+
+### Activity report
+
+`--report` summarises what a carrier is doing, also when all of its signalling is
+encrypted. It needs no decryption: the AACH of every burst says, in clear, whether its
+slot carries control, nothing, or a traffic channel (with a usage marker), and the
+MAC-RESOURCE headers in front of encrypted signalling are clear as well. Only counts are
+reported, never addresses or contents. An illustrative example with fictitious values:
+
+```
+[report] 391.4125 MHz  MCC 901 MNC 9999 CC 7 LA 2001  period 60.0 s
+  TN1  DL common control 100% | UL control 100% | sync bursts 1%
+  TN2  DL unallocated 100% | UL unallocated 100% | sync bursts 100%
+  TN3  DL traffic 66%, unallocated 18%, assigned control 16%, 5 sessions | UL traffic 66%, ...
+  TN4  DL unallocated 72%, traffic 15%, assigned control 13%, 4 sessions | UL unallocated 72%, ...
+  traffic sessions: 9 ended, 1 ongoing, 8 usage markers; duration total 51.9 s, median 2.9 s, max 20.3 s
+  signalling: 994 PDUs to 25 addresses (99% encrypted), 799 null, 157 fragmented, 29 random-access acks, 279 channel allocations (279 encrypted)
+  clear L3: D-LOCATION-UPDATE-ACCEPT 4, D-AUTHENTICATION 2
+```
+
+- **TNn.** Share of each downlink usage (and of the matching uplink slot) seen on the
+  AACH, excluding frame 18. `sync bursts` is the share of synchronisation bursts; an idle
+  base station often fills unused slots with them.
+- **Traffic sessions.** A session is one usage marker held on one slot. With transmission
+  trunking the network assigns a channel per over, so a session is one press of the PTT;
+  with message trunking it is a whole call.
+- **Signalling.** Non-null MAC-RESOURCE PDUs, how many distinct addresses they carry and
+  how many are encrypted; fragmented PDUs; random-access acknowledgements (answers to
+  terminals transmitting on the uplink); channel allocations.
+- **Clear L3.** Counts of unencrypted layer-3 PDU types.
+
+With `--report N` each report covers the N seconds since the previous one, which suits
+long-term monitoring. With `--json` every report is also printed as one JSON line.
 
 ## Performance
 
