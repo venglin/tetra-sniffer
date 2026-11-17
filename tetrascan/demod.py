@@ -19,7 +19,15 @@ Processing steps
    mid-burst sequence (n, p or y), which also tells the burst type. Symbols are
    interpolated at the refined instants and detected differentially, so no
    carrier phase recovery is needed. The residual carrier offset is measured per
-   burst and fed back slowly.
+   burst and fed back slowly, only from bursts that match the training sequences
+   well, and never more than ``MAX_CFO_DRIFT`` away from the acquisition estimate.
+4. **Loss of signal.** An exponential average of the training-sequence score is
+   kept while tracking. Noise alone scores about 0.46 (the best of several offsets
+   and templates), a TETRA burst at 3 dB Es/N0 still about 0.78. When the average
+   falls below ``LOSS_SCORE`` (a carrier switched off, a deep fade) the demodulator
+   returns to burst search with the last trusted carrier offset. A channel that has
+   never seen a good burst (the carrier was off at start-up) acquires the carrier
+   offset again every ``REACQUIRE_S`` of unsuccessful search.
 
 Differential detection: ``d_k = r_k * conj(r_{k-1})``. Table 5.1 maps the dibit
 (b1, b2) to +pi/4 (00), +3pi/4 (01), -3pi/4 (11), -pi/4 (10), so b1 is the sign
@@ -126,8 +134,14 @@ class Demodulator:
     CFO_LOOP_GAIN = 0.05
     TIMING_LOOP_GAIN = 0.3
     MAX_MISSES = 8
+    CFO_MIN_SCORE = 0.6  # bursts scoring lower do not update the carrier offset
+    GOOD_SCORE = 0.75  # bursts scoring higher make the carrier offset "trusted"
+    MAX_CFO_DRIFT = 2500.0  # Hz around the acquisition estimate
+    LOSS_SCORE = 0.6  # average score below which the lock is dropped
+    LOSS_ALPHA = 1 / 16  # smoothing of the average score (about 16 bursts)
+    REACQUIRE_S = 5.0
 
-    def __init__(self, lock_threshold: float = 0.55, track_threshold: float = 0.45, cfo_hz: float | None = None,
+    def __init__(self, lock_threshold: float = 0.62, track_threshold: float = 0.45, cfo_hz: float | None = None,
                  method: str = "coherent"):
         if method not in ("coherent", "differential"):
             raise ValueError(f"unknown detection method {method!r}")
@@ -148,10 +162,17 @@ class Demodulator:
         self._misses = 0
         self._next = 0.0
         self.locks = 0
+        self.losses = 0
         self.last_lock_metric = 0.0
+        self.score_avg = 0.0
+        self._cfo_acq = cfo_hz
+        self._cfo_good: float | None = None  # offset at the last burst that scored >= GOOD_SCORE
+        self._search_samples = 0
+        self._tail = np.zeros(0, np.complex64)  # last ACQ_SAMPLES of raw input
 
     # ----------------------------------------------------------------- input
     def process(self, x: np.ndarray) -> list[Burst]:
+        self._tail = np.concatenate([self._tail, x])[-self.ACQ_SAMPLES :]
         if self.cfo is None:
             self._raw.append(x)
             self._raw_len += len(x)
@@ -159,7 +180,7 @@ class Demodulator:
                 return []
             x = np.concatenate(self._raw)
             self._raw, self._raw_len = [], 0
-            self.cfo = estimate_cfo(x)
+            self.cfo = self._cfo_acq = estimate_cfo(x)
         if self.state == "acq":
             self.state = "search"
         w = -2 * np.pi * self.cfo / CHANNEL_RATE
@@ -171,9 +192,39 @@ class Demodulator:
         out: list[Burst] = []
         if self.state == "search":
             self._search()
+            if self.state == "lock" and self._cfo_good is None and len(self._tail) >= self.ACQ_SAMPLES // 2:
+                # First lock without a trusted offset (the start-up estimate may have been
+                # taken from noise): measure it again on the signal that has just been found.
+                # The burst correlation ignores a constant offset, the detector does not.
+                self.cfo = self._cfo_acq = estimate_cfo(self._tail)
+            if self.state == "search":
+                self._search_samples += len(x)
+                if self._search_samples >= self.REACQUIRE_S * CHANNEL_RATE:
+                    self._reacquire()
         if self.state == "lock":
+            self._search_samples = 0
             out = self._track()
         return out
+
+    def _reacquire(self) -> None:
+        """Search has failed for a while. Without a trusted carrier offset (no good burst seen
+        yet, e.g. the carrier was off when the receiver started) acquire it afresh; with one,
+        keep it: the oscillators drift slowly, and an estimate taken from noise would only
+        move the receiver away from where the carrier will reappear."""
+        self._search_samples = 0
+        if self._cfo_good is not None:
+            self.cfo = self._cfo_acq = self._cfo_good
+            return
+        self.cfo = None
+        self.state = "acq"
+        self._y0 += len(self._y)  # keep absolute sample indices
+        self._y = np.zeros(0, np.complex64)
+
+    def _lose_lock(self) -> None:
+        self.state = "search"
+        self.losses += 1
+        if self._cfo_good is not None:
+            self.cfo = self._cfo_good
 
     # ---------------------------------------------------------------- search
     def _search(self) -> None:
@@ -201,6 +252,7 @@ class Demodulator:
         self.locks += 1
         self._seq = 0
         self._misses = 0
+        self.score_avg = 1.0  # give a fresh lock a few bursts before judging it
 
     # -------------------------------------------------------------- tracking
     def _track(self) -> list[Burst]:
@@ -212,11 +264,13 @@ class Demodulator:
                 break
             base = c - self.MARGIN_BEFORE
             seg = self._y[base - self._y0 : c + self.MARGIN_AFTER - self._y0]
-            out.append(self._demod_burst(seg, base, s))
+            b = self._demod_burst(seg, base, s)
+            out.append(b)
             self._next += SLOT
             self._seq += 1
-            if self._misses >= self.MAX_MISSES:
-                self.state = "search"
+            self.score_avg += self.LOSS_ALPHA * (b.score - self.score_avg)
+            if self._misses >= self.MAX_MISSES or self.score_avg < self.LOSS_SCORE:
+                self._lose_lock()
         if out and self.method == "coherent":
             soft = coherent_soft(np.stack([b.symbols for b in out]))
             for b, sb in zip(out, soft):
@@ -276,8 +330,13 @@ class Demodulator:
         soft[1::2] = dn.real
         ideal = np.exp(1j * (np.pi / 4 + np.pi / 2 * np.round((np.angle(dn) - np.pi / 4) / (np.pi / 2))))
         mer = 10 * np.log10(1.0 / max(float(np.mean(np.abs(dn - ideal) ** 2)), 1e-6))
-        if best >= self.track_threshold:
+        if best >= self.CFO_MIN_SCORE:
             self.cfo += self.CFO_LOOP_GAIN * w * B.SYMBOL_RATE / (2 * np.pi)
+            if self._cfo_acq is not None:
+                self.cfo = float(np.clip(self.cfo, self._cfo_acq - self.MAX_CFO_DRIFT,
+                                         self._cfo_acq + self.MAX_CFO_DRIFT))
+            if best >= self.GOOD_SCORE:
+                self._cfo_good = self.cfo
         level = 10 * np.log10(max(float(np.mean(np.abs(v) ** 2)), 1e-20))
         sym = v.astype(np.complex64)
         return Burst(start=s, seq=self._seq, epoch=self.epoch, kind=kind, soft=soft, score=best,

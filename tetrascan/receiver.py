@@ -233,7 +233,7 @@ class MultiReceiver:
             s = ch.summary()
             mer = f"{s['mer_db']:.1f}" if s["mer_db"] is not None else "-"
             lvl = f"{s['level_db']:.0f}" if s["level_db"] is not None else "-"
-            cfo = f"{s['cfo_hz']:+.0f}" if s["cfo_hz"] is not None else "-"
+            cfo = f"{s['cfo_hz']:+.0f}" if s["cfo_hz"] is not None and s["locked"] else "-"
             tot = s["blk_ok"] + s["blk_bad"]
             crc = f"{100 * s['blk_ok'] / tot:.0f}%" if tot else "-"
             parts.append(f"{mhz(ch.freq_hz)} {'LOCK' if s['locked'] else 'srch'} MER {mer} dB lvl {lvl} dBFS "

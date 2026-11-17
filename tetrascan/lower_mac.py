@@ -87,6 +87,8 @@ class CellRegistry:
 
 
 class LowerMac:
+    AACH_FULL_SCORE = 0.7  # bursts scoring lower get a stricter AACH acceptance
+
     def __init__(self, registry: CellRegistry | None = None, name: str = ""):
         self.registry = registry
         self.name = name
@@ -98,7 +100,12 @@ class LowerMac:
 
     def _time(self, b: Burst) -> TdmaTime | None:
         if self._ref is None or self._ref[0] != b.epoch:
-            return None
+            # After a new lock, a slot-aligned BSCH seen earlier (on this or another
+            # carrier) still gives the TDMA time; otherwise wait for the next BSCH.
+            t = self.registry.time_for(self.scramb, b.start) if self.registry and self.scramb else None
+            if t is None:
+                return None
+            self._ref = (b.epoch, b.seq, t)
         return self._ref[2].advance(b.seq - self._ref[1])
 
     def process(self, bursts: list[Burst]) -> list[Block]:
@@ -140,7 +147,10 @@ class LowerMac:
         aach: dict[int, dict] = {}
         for b, i, e in zip(good, info, nerr):
             t = self._time(b)
-            if e <= 3:
+            # RM(30,14) has minimum distance 8: up to 3 errors are correctable, but a random
+            # word lies within distance 3 of some codeword 7 % of the time. Weak bursts
+            # (possibly noise) must therefore decode almost exactly.
+            if e <= (3 if b.score >= self.AACH_FULL_SCORE else 1):
                 a = parse_aach(i, t.fn if t else None)
                 aach[id(b)] = a
                 out.append(Block("AACH", True, i, b, t, pdus=[a]))

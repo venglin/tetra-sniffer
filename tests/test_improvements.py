@@ -319,3 +319,58 @@ def test_cli_file_log_quiet(tmp_path, capsys):
     assert cli.main(["stats", str(log)]) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[0].startswith("hour") and len(out) == 3  # header + two carriers
+
+
+# ------------------------------------------------------------ carrier switched off / on
+def _gated(on_off, snr=8.0, seed=4):
+    fs = 576e3
+    dur = sum(d for d, _ in on_off)
+    x = sim.wideband([(60e3, sim.CellConfig(), 0.0)], fs, dur, snr_db=200, ppm=10, seed=seed)
+    p = np.mean(np.abs(x) ** 2)
+    g = np.concatenate([np.full(int(d * fs), float(on)) for d, on in on_off])[: len(x)]
+    var = p * fs / (18000 * 10 ** (snr / 10))
+    rng = np.random.default_rng(seed + 100)
+    n = np.sqrt(var / 2) * (rng.standard_normal(len(g)) + 1j * rng.standard_normal(len(g)))
+    return (x[: len(g)] * g + n).astype(np.complex64), fs
+
+
+def _feed_trace(x, fs, step=0.25):
+    rx = MultiReceiver(fs, 0.0, [60e3])
+    ch = rx.channels[0]
+    times = []
+
+    class P:
+        def emit(self, c, blk, pdus):
+            times.append((blk.lchan, blk.burst.start / 144e3))
+
+    rx.printer = P()
+    states = []
+    n = int(step * fs)
+    for i in range(0, len(x), n):
+        rx.feed(x[i : i + n])
+        states.append(((i + n) / fs, ch.demod.state))
+    return ch, times, states
+
+
+def test_carrier_switched_off_and_on():
+    x, fs = _gated([(3, 1), (7, 0), (4, 1)], seed=9)
+    ch, times, states = _feed_trace(x, fs)
+    d = ch.demod
+    assert d.losses == 1 and d.locks == 2
+    assert all(s == "search" for t, s in states if 4.0 <= t <= 10.0)  # lock dropped within a second
+    assert not [t for lc, t in times if 3.5 < t < 10.0]  # nothing decoded from noise
+    assert abs(d.cfo) < 300  # the offset did not wander off
+    assert len([t for lc, t in times if t > 10.5 and lc in ("SCH/F", "SCH/HD", "BNCH")]) > 100
+
+
+def test_carrier_off_at_start():
+    x, fs = _gated([(7, 0), (4, 1)], seed=7)
+    ch, times, _ = _feed_trace(x, fs)
+    assert len([t for lc, t in times if lc in ("SCH/F", "SCH/HD", "BNCH")]) > 100
+    assert abs(ch.demod.cfo) < 300
+
+
+def test_noise_only_decodes_nothing():
+    x, fs = _gated([(15, 0)], seed=3)
+    ch, times, _ = _feed_trace(x, fs, step=0.5)
+    assert times == [] and ch.lmac.stats["blk_ok"] == 0

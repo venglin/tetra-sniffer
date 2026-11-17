@@ -166,6 +166,8 @@ def format_report(freq_mhz: str, rep: dict, cell: dict | None = None, la: int | 
         head += f"  MCC {cell['mcc']} MNC {cell['mnc']} CC {cell['cc']}"
     if la is not None:
         head += f" LA {la}"
+    if not rep["period_s"]:
+        return head + "  no signal"
     lines = [head + f"  period {rep['period_s']:.1f} s"]
     for tn, s in rep["slots"].items():
         calls = f", {s['sessions']} sessions" if s["sessions"] else ""

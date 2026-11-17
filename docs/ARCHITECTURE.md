@@ -78,7 +78,8 @@ The filter shifts each carrier to 0 Hz and resamples it to 144 kHz (8 samples/sy
    correlation of the differential signal with the q template:
    `|Σ d[n+8k]·conj(t_k)| / Σ|d[n+8k]|`. The result is insensitive to carrier phase and
    (small) frequency offsets. It is averaged modulo 2040 samples (one slot), and a peak
-   above 0.55 gives the slot timing.
+   above 0.62 gives the slot timing. On noise alone this metric stays below about 0.59;
+   a TETRA carrier at 3 dB Es/N0 gives at least 0.68.
 3. **Tracking.** For each expected burst, the score over ±4 samples is the mean of three
    correlations: q before the burst, q after it, and the best of n / p / y in the middle.
    The best offset is refined by parabolic interpolation and fed into a first-order timing
@@ -87,9 +88,27 @@ The filter shifts each carrier to 0 Hz and resamples it to 144 kHz (8 samples/sy
    bursts send the demodulator back to search.
 4. **Symbols.** Symbols −1…254 are linearly interpolated at the refined instants. The
    per-burst residual offset (4th-power estimate on the differential symbols) is fed back
-   to the mixer with gain 0.05. The differential symbols also give the MER shown in the
-   status line.
-5. **Soft bits**, from one of two detectors (positive soft value = bit 0):
+   to the mixer with gain 0.05. Only bursts with a score of at least 0.6 update it, and
+   it is kept within ±2.5 kHz of the acquisition estimate. The differential symbols also
+   give the MER shown in the status line.
+5. **Loss of signal.** Base stations switch idle secondary carriers off (seen on air).
+   The per-burst score is useless for noticing this on its own: on noise it is still
+   about 0.46, because it is the best of 9 offsets and 3 middle templates, while the
+   tracking threshold is 0.45. The demodulator therefore keeps an exponential average
+   of the score (about 16 bursts; a carrier at 3 dB Es/N0 averages about 0.78).
+   - **Dropping the lock.** When the average falls below 0.6, the demodulator returns to
+     burst search. It restores the carrier offset of the last burst that scored ≥ 0.75
+     (the *trusted* offset), so the offset cannot drift while there is no signal.
+   - **First lock.** A channel that has never had a trusted offset (the carrier was off
+     at start-up, so the first estimate came from noise) measures the offset again on the
+     150 ms of signal it has just locked to. The burst correlation ignores a constant
+     offset, but the detector does not.
+   - **Re-acquisition.** Without a trusted offset, the offset is acquired afresh after
+     every 5 s of unsuccessful search. With one, it is kept.
+   - **Result.** In simulation a carrier that is switched off is dropped within 0.5 s.
+     Nothing is decoded from the noise. When it reappears it is decoded again within
+     about 0.2 s, also after a 23 s gap.
+6. **Soft bits**, from one of two detectors (positive soft value = bit 0):
    - *Differential* (`--demod differential`). Table 5.1 maps the dibits (00, 01, 11, 10)
      to +π/4, +3π/4, −3π/4 and −π/4. So after removing the per-burst residual offset,
      the first bit is the sign of Im(d) and the second the sign of Re(d), normalised by
@@ -153,7 +172,13 @@ type-1 ─► +CRC-16 +4 tail ─► type-2 ─► RCPC (K=5, rate 1/4 mother, p
 - **CRC checking** uses the affine-map form of the CRC (one matrix multiply per batch).
   The good residue is 0x1D0F.
 - **AACH** is decoded by a maximum-likelihood search over all 16384 RM(30,14) codewords
-  and accepted with ≤ 3 disagreeing hard bits (minimum distance 8).
+  and accepted with ≤ 3 disagreeing hard bits (minimum distance 8). A random 30-bit word
+  lies within distance 3 of some codeword 7 % of the time, so bursts with a
+  training-sequence score below 0.7 (possibly noise) must decode with ≤ 1 error
+  (false acceptance 0.05 %).
+- **TDMA time after a new lock.** A new lock epoch normally waits for a BSCH. If an
+  earlier BSCH of the same cell (on this or another carrier) is slot-aligned with the
+  new bursts, the time is taken from it straight away.
 - **Order of decoding.** Synchronisation bursts are decoded first. A BSCH that passes its
   CRC gives MCC, MNC and the colour code, which set the scrambling code of every other
   block on the carrier. It also anchors the TDMA time (TN/FN/MN), which is then advanced
